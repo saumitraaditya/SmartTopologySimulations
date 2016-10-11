@@ -1,5 +1,6 @@
 import akka.actor.{ActorSystem, ActorRef, Actor, Props,actorRef2Scala,PoisonPill,ActorLogging}
 import collection.mutable.HashMap
+import scala.collection.mutable.Queue
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.duration._
@@ -11,11 +12,16 @@ case object start
 case object revaluate_socialTopo
 case object trigger_lact
 case object displayTopology
+case object BootStrap
 case class RVUpdate(senderID:Int,RV:ArrayBuffer[Int])
 case class RVUpdateNeg(senderID:Int,TrLinks:ArrayBuffer[Int])
 case class LACTupdate(senderID:Int,lact:ArrayBuffer[edge])
 case class con_req(senderId:Int)
 case class con_ack(senderID:Int)
+//Bootstrap request/acks
+case class bsr_req(senderID:Int)
+case class bsr_ack(senderID:Int)
+case class bsr_nack(senderID:Int)
 // represents a link in the graph.
 class edge(source:Int,target:Int,value:Double,trueLink:Boolean)
 {
@@ -27,6 +33,36 @@ class edge(source:Int,target:Int,value:Double,trueLink:Boolean)
   def getString():String=
   {
     return "<"+src+"--->"+dst+":cost "+cost+" status: "+real+">";
+  }
+  
+  def canEqual(a:Any) = a.isInstanceOf[edge]
+  
+  override def equals(that:Any):Boolean = 
+   that match {
+    case that:edge => that.canEqual(this) && this.hashCode == that.hashCode
+    case _ => false
+  }
+  
+  override def hashCode:Int = {
+    val prime = 31
+    var result = 1
+    result = prime * result + src;
+    result = prime * result + dst;
+    return result
+  }
+}
+/*BootStrapBookEntry*/
+class BSBE(State:String,Timestamp:Long)
+{
+  var curr_state = State;
+  var timestamp = Timestamp;
+  
+  def updateState(state:String):Unit={
+    curr_state = state;
+  }
+  
+  def updateTimer(timer:Long):Unit={
+    timestamp = timer;
   }
 }
 /* This class represents unified view of the neighborhood, containing all information 
@@ -97,7 +133,7 @@ class Monitor(RosterFile:String) extends Actor
             println("-----------real/social--------------")
             println(EdgeMap(src).filter { _.real}.size.toFloat/EdgeMap(src).size)
           }
-          
+          println("\n\n\n\n")
           println("------------------ "+"FILE"+" ----------------------")
           for (src <- EdgeMap.keySet)
           {          
@@ -113,7 +149,8 @@ class Monitor(RosterFile:String) extends Actor
             }
             println(SB_file)
           }
-          
+          println("\n\n\n\n");
+          println("------------------ "+"END OF FILE"+" ----------------------")
           
         }
       case `start`=>
@@ -121,7 +158,7 @@ class Monitor(RosterFile:String) extends Actor
           /* schedule periodic displays*/
           val Asys = context.system;
           import Asys.dispatcher;
-          Asys.scheduler.schedule(new FiniteDuration(120,SECONDS),new FiniteDuration(120,SECONDS),self,displayTopology)
+          Asys.scheduler.schedule(new FiniteDuration(240,SECONDS),new FiniteDuration(240,SECONDS),self,displayTopology)
         }
     }
 }
@@ -130,11 +167,11 @@ class Monitor(RosterFile:String) extends Actor
 class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
 {
   val myID = uid;
-  val degree_constraint = 4;
+  val degree_constraint = 10;
   var CostPrevTree:Double = Double.MaxValue;
   /* will contain social links*/
   var socialView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
-  /* will contain actual links, needs to be updates when new links are created by self, or information about
+  /* will contain actual links, needs to be updated when new links are created by self, or information about
    * new link created by neighbors is learnt*/
   var realView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
   /*Initially, node will have edges to to immediate neighbors,
@@ -142,11 +179,22 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
    * to shared neighbors and add them */
   socialView+=(uid->new ArrayBuffer[Int]());
   realView+=(uid->new ArrayBuffer[Int]());
+  
+  /* BootStrap bookkeeping*/
+  var BSQ = 5;
+  var BSC = 0; //BootStrapCounter, links created to count BSR links created.
+  var BST = 5; //BootStrapThreshhold
+  var BSR_outstanding=0;
+  var BootStrapQ = new Queue[Int]
+  var BootStrapBook = new HashMap[Int,BSBE](){ override def default(key:Int) = new BSBE("empty",0) }
   for (neighbor <- Roster)
   {
      socialView+=(neighbor->new ArrayBuffer[Int]()); // Adjacency list for neighbors
      realView+=(neighbor->new ArrayBuffer[Int]()); // realView for neighbors
      socialView(uid)+=neighbor; // Adjacency list for root node.
+     var BSBE_temp = new BSBE("empty",0)
+     BootStrapBook+=(neighbor->BSBE_temp);
+     BootStrapQ.enqueue(neighbor)
   }    
   def receive = 
   {
@@ -159,8 +207,72 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
       {
         val Asys = context.system;
         import Asys.dispatcher;
-        Asys.scheduler.schedule(new FiniteDuration(1,SECONDS),new FiniteDuration(20,SECONDS),self,revaluate_socialTopo)
-        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(60,SECONDS),self,trigger_lact)
+        Asys.scheduler.schedule(new FiniteDuration(1,SECONDS),new FiniteDuration(30,SECONDS),self,revaluate_socialTopo)
+        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
+        Asys.scheduler.schedule(new FiniteDuration(60,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
+      }
+    case `BootStrap`=>
+      {
+        if (BST < socialView(myID).size)
+          BST = socialView(myID).size
+        //if I already have more than or equal to threshhold links do nothing
+        if (realView(myID).size < BST)
+        {
+          //links needed
+          var needed_links = BST - realView(myID).size
+          /* check if any of timers have expired or are still running for sent con_reqs*/
+          for (key <- BootStrapBook.keySet)
+          {
+            var temp = BootStrapBook.getOrElse(key, new BSBE("empty",0));
+            if (temp.curr_state.equals("sent_req"))
+            {
+              if ((System.currentTimeMillis/1000) - temp.timestamp > 60)
+                {
+                  BSR_outstanding = BSR_outstanding-1;
+                  temp.updateState("empty")
+                }
+            }
+            if (temp.curr_state.equals("bsr_nack"))
+            {
+                  BSR_outstanding = BSR_outstanding-1;
+                  temp.updateState("empty")
+            }
+            
+          }
+          if (BSR_outstanding < 0)
+            BSR_outstanding =0;// sanity check to play safe
+          var can_send = needed_links - BSR_outstanding//can only send these many requests in this iteration
+          
+           /* Go through the queue */
+          var i=0;
+          var j = 0
+          while ( i < can_send && j < BootStrapQ.size)
+          {
+            j+=1;
+            //pluck from queue
+            var candidate = BootStrapQ.dequeue();
+            var entry = BootStrapBook.getOrElse(candidate,new BSBE("empty",0));
+            if (realView(myID).contains(candidate))
+            {
+              entry.updateState("connected");
+              BootStrapQ.enqueue(candidate)
+            }
+            else
+            {
+              if (entry.curr_state.equals("empty"))
+              {
+                val requestTo = "../"+candidate.toString;
+                context.actorSelection(requestTo) !  bsr_req(myID)
+                entry.updateState("sent_req");
+                entry.updateTimer(System.currentTimeMillis/1000);
+                BootStrapQ.enqueue(candidate)
+                BSR_outstanding+=1;
+                i+=1;
+              }
+            }
+            
+          }
+        }
       }
     case `revaluate_socialTopo`=>
       {
@@ -188,9 +300,9 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
          * DCST*/
         //ViewSnapshot(socialView:HashMap[Int,ArrayBuffer[Int]],realView:HashMap[Int,ArrayBuffer[Int]])
         var timedShot = new ViewSnapshot(socialView,realView)
-        var myLact = new LACT(1,timedShot,.2,5);
+        var myLact = new LACT(1,timedShot,.2,degree_constraint);
         val currentDCST:ArrayBuffer[edge] = myLact.iterateTree(myID);
-        myLact.displaySpanningTree(true);
+        //myLact.displaySpanningTree(true);//-------------------------------------------------------- UNCOMMENT FOR SMALL GRAPHS.
         var costCurrentTree = myLact.getCost();
         if (costCurrentTree < CostPrevTree)
         {
@@ -277,6 +389,37 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         if (!realView(myID).contains(senderID))
         {
           realView(myID)+=senderID
+        }
+      }
+    case bsr_req(senderID:Int)=>{
+      /*check if BSQ is not violated, if not send bsr_ack, increment BSC and add link to overlay*/
+      if (BSC < BSQ && (!realView(myID).contains(senderID)))
+      {
+        BSC= BSC+1;
+        realView(myID)+=senderID;
+        val requestor = "../"+senderID.toString;
+        context.actorSelection(requestor) !  bsr_ack(myID)
+      }
+      else
+      {
+        val requestor = "../"+senderID.toString;
+        context.actorSelection(requestor) !  bsr_nack(myID)
+      }
+    }
+    
+    case bsr_ack(senderID:Int)=>
+      {
+        if (!realView(myID).contains(senderID))
+        {
+          realView(myID)+=senderID
+          BootStrapBook.getOrElse(senderID,new BSBE("empty",0)).updateState("connected");
+        }
+      }
+    case bsr_nack(senderID:Int)=>
+      {
+        if (!realView(myID).contains(senderID))
+        {
+          BootStrapBook.getOrElse(senderID,new BSBE("empty",0)).updateState("bsr_nack");
         }
       }
   }
