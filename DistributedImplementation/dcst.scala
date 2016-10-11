@@ -115,7 +115,7 @@ class Monitor(RosterFile:String) extends Actor
             if (rv.contains(e.dst))
             {
               e.real = true;
-            }
+            } // else put false--> forces RV to stay current
           }
         }
       case `displayTopology`=>
@@ -168,6 +168,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
 {
   val myID = uid;
   val degree_constraint = 10;
+  val gamma_cost = .75;
   var CostPrevTree:Double = Double.MaxValue;
   /* will contain social links*/
   var socialView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
@@ -213,7 +214,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
       }
     case `BootStrap`=>
       {
-        if (BST < socialView(myID).size)
+        if (BST > socialView(myID).size)
           BST = socialView(myID).size
         //if I already have more than or equal to threshhold links do nothing
         if (realView(myID).size < BST)
@@ -304,7 +305,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         val currentDCST:ArrayBuffer[edge] = myLact.iterateTree(myID);
         //myLact.displaySpanningTree(true);//-------------------------------------------------------- UNCOMMENT FOR SMALL GRAPHS.
         var costCurrentTree = myLact.getCost();
-        if (costCurrentTree < CostPrevTree)
+        if (costCurrentTree < gamma_cost*CostPrevTree)
         {
             // updatePrevCost
             CostPrevTree = costCurrentTree;
