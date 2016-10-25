@@ -1,11 +1,13 @@
 import akka.actor.{ActorSystem, ActorRef, Actor, Props,actorRef2Scala,PoisonPill,ActorLogging}
 import collection.mutable.HashMap
+import scala.collection.mutable.Set
 import scala.collection.mutable.Queue
 import scala.collection.mutable.ArrayBuffer
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.duration._
 import java.util.concurrent.TimeUnit;
 import scala.io.Source
+import scala.util.Random
 
 
 case object start
@@ -13,11 +15,18 @@ case object revaluate_socialTopo
 case object trigger_lact
 case object displayTopology
 case object BootStrap
+// Random Topology
+case object randomTopology
 case class RVUpdate(senderID:Int,RV:ArrayBuffer[Int])
 case class RVUpdateNeg(senderID:Int,TrLinks:ArrayBuffer[Int])
-case class LACTupdate(senderID:Int,lact:ArrayBuffer[edge])
+case class LACTupdate(senderID:Int,lact:collection.immutable.Set[edge])
+case class Trimupdate(senderID:Int,lact:collection.immutable.Set[edge])
 case class con_req(senderId:Int)
 case class con_ack(senderID:Int)
+case class trim_req(senderId:Int)
+case class trim_ack(senderId:Int)
+case class add_new_links(senderId:Int,req_link_set:ArrayBuffer[edge])
+case class remove_old_links(senderId:Int,old_link_set:ArrayBuffer[edge])
 //Bootstrap request/acks
 case class bsr_req(senderID:Int)
 case class bsr_ack(senderID:Int)
@@ -116,6 +125,10 @@ class Monitor(RosterFile:String) extends Actor
             {
               e.real = true;
             } // else put false--> forces RV to stay current
+            else
+            {
+              e.real = false;
+            }
           }
         }
       case `displayTopology`=>
@@ -167,9 +180,11 @@ class Monitor(RosterFile:String) extends Actor
 class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
 {
   val myID = uid;
-  val degree_constraint = 10;
+  val degree_constraint = 20;
   val gamma_cost = .75;
   var CostPrevTree:Double = Double.MaxValue;
+  var refCounter = new HashMap[Int,Int](){ override def default(key:Int) = 0 } //keeps track how many nodes depend on my link to this dest.
+  var prevTree:ArrayBuffer[edge]= new ArrayBuffer[edge]();
   /* will contain social links*/
   var socialView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
   /* will contain actual links, needs to be updated when new links are created by self, or information about
@@ -186,7 +201,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
   var BSC = 0; //BootStrapCounter, links created to count BSR links created.
   var BST = 5; //BootStrapThreshhold
   var BSR_outstanding=0;
-  var BootStrapQ = new Queue[Int]
+  var BootStrapQ = new collection.mutable.Queue[Int]
   var BootStrapBook = new HashMap[Int,BSBE](){ override def default(key:Int) = new BSBE("empty",0) }
   for (neighbor <- Roster)
   {
@@ -195,7 +210,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
      socialView(uid)+=neighbor; // Adjacency list for root node.
      var BSBE_temp = new BSBE("empty",0)
      BootStrapBook+=(neighbor->BSBE_temp);
-     BootStrapQ.enqueue(neighbor)
+     BootStrapQ+=neighbor
   }    
   def receive = 
   {
@@ -209,7 +224,9 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         val Asys = context.system;
         import Asys.dispatcher;
         Asys.scheduler.schedule(new FiniteDuration(1,SECONDS),new FiniteDuration(30,SECONDS),self,revaluate_socialTopo)
-        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
+        //randomTopology
+        //Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
+        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,randomTopology)
         Asys.scheduler.schedule(new FiniteDuration(60,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
       }
     case `BootStrap`=>
@@ -256,7 +273,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
             if (realView(myID).contains(candidate))
             {
               entry.updateState("connected");
-              BootStrapQ.enqueue(candidate)
+              BootStrapQ+=candidate
             }
             else
             {
@@ -266,7 +283,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
                 context.actorSelection(requestTo) !  bsr_req(myID)
                 entry.updateState("sent_req");
                 entry.updateTimer(System.currentTimeMillis/1000);
-                BootStrapQ.enqueue(candidate)
+                BootStrapQ+=candidate
                 BSR_outstanding+=1;
                 i+=1;
               }
@@ -291,7 +308,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
           val monitor = "../"+"monitor";
           context.actorSelection(monitor) !  RVUpdate(myID,RVclone)
       }
-    case `trigger_lact` =>
+     case `trigger_lact` =>
       {
         /*Take a snapshot of the views
          * invoke LACT on the snapshot
@@ -309,8 +326,14 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         {
             // updatePrevCost
             CostPrevTree = costCurrentTree;
-            //updating realView
-            for (e<-currentDCST)
+            /* Calculate diffs*/
+            var existingSet = prevTree.toSet
+            var proposedSet = currentDCST.toSet
+            var newSet = proposedSet.diff(existingSet.intersect(proposedSet)) //add these links
+            var oldSet = existingSet.diff(existingSet.intersect(proposedSet)) //remove these links
+            prevTree = currentDCST;
+            //updating realView-add
+            for (e<-newSet)
             {
               if (e.src == myID && !realView(myID).contains(e.dst))
               {
@@ -319,13 +342,45 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
                 context.actorSelection(requestTo) !  con_req(myID)
               }
             }
-            //disseminate LACT-sendDeepCopy
+            // remove
+//            for (e<-oldSet)
+//            {
+//              if (e.src == myID && realView(myID).contains(e.dst))
+//              {
+//                //send trim_req to dst
+//                val requestTo = "../"+e.dst.toString;
+//                context.actorSelection(requestTo) !  trim_req(myID)
+//              }
+//            }
+            //disseminate set of edges to be added-sendDeepCopy
             for (neighbor <- Roster)
             {
               val neighborActor = "../"+neighbor.toString;
-              context.actorSelection(neighborActor) ! LACTupdate(myID,currentDCST.clone) //currentDCST is a val i.e constant.
+              context.actorSelection(neighborActor) ! LACTupdate(myID,newSet) //currentDCST is a val i.e constant.
             }
+            //diss3minate set of edges to be removed
+//             for (neighbor <- Roster)
+//            {
+//              val neighborActor = "../"+neighbor.toString;
+//              context.actorSelection(neighborActor) ! Trimupdate(myID,oldSet) //currentDCST is a val i.e constant.
+//            }
         }
+      }
+    case `randomTopology` =>
+      {
+        // Select random edges from social topology and map to overlay links.
+        var randTop = scala.util.Random.shuffle(socialView(myID).toList).take(degree_constraint)
+        for (dst<-randTop)
+          {
+            if (!realView(myID).contains(dst))
+            {
+              //send con_req to dst
+              val requestTo = "../"+dst.toString;
+              context.actorSelection(requestTo) !  con_req(myID)
+            }
+          }
+        
+        
       }
       
     case RVUpdate(senderID:Int, rv:ArrayBuffer[Int])=>
@@ -341,7 +396,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
           // so when calculating excess it might be hard to identify nodes which are heavily loaded.
         }
       }
-    case LACTupdate(senderID:Int,lact:ArrayBuffer[edge])=>
+   case LACTupdate(senderID:Int,lact:Set[edge])=>
       {
         /* neighbors dcst recvd,based on it I might create a few links requested by the neighbor
          * simple policy-- if realLinks I have created are less than degree_constraint I will 
@@ -355,6 +410,21 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
                   // Initiate con_req to create a link on behalf of the requestor
                   val requestTo = "../"+e.dst.toString;
                   context.actorSelection(requestTo) !  con_req(myID)
+                }
+            }
+        }
+      }
+   case Trimupdate(senderID:Int,trimSet:Set[edge])=>
+      {
+        for (e<-trimSet)
+        {
+          if (e.src == myID) // sender wants me to create this link for him.
+            {
+              if (realView(myID).contains(e.dst))
+                {
+                  // Initiate trim_req to remove the link on behalf of requestor
+                  val requestTo = "../"+e.dst.toString;
+                  context.actorSelection(requestTo) !  trim_req(myID)
                 }
             }
         }
@@ -381,8 +451,16 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         {
              //I will create this link, send ack to sender
             realView(myID)+=senderId;
+            var temp = refCounter(senderId)
+            refCounter.update(senderId,temp+1)
             val requestor = "../"+senderId.toString;
             context.actorSelection(requestor) !  con_ack(myID)       
+        }
+        if (realView(myID).contains(senderId))
+        {
+           realView(myID)+=senderId;
+           var temp = refCounter(senderId)
+           refCounter.update(senderId,temp+1)
         }
       }
     case con_ack(senderID:Int)=>
@@ -390,7 +468,36 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         if (!realView(myID).contains(senderID))
         {
           realView(myID)+=senderID
+          var temp = refCounter(senderID)
+          refCounter.update(senderID,temp+1)
         }
+      }
+      
+    case trim_req(senderId:Int)=>
+      {
+        //just remove the link to sender from my realview
+        if (realView(myID).contains(senderId))
+        {
+          if (refCounter(senderId)==0)
+          {
+            realView(myID)-=(senderId)
+            val requestor = "../"+senderId.toString;
+            context.actorSelection(requestor) !  trim_ack(myID)
+          }
+          else
+          {
+            var temp = refCounter(senderId)
+            refCounter.update(senderId,temp-1)
+          }      
+        }    
+      }
+     case trim_ack(senderId:Int)=>
+      {
+        //just remove the link to sender from my realview, he has already done it.
+        if (realView(myID).contains(senderId))
+        {
+          realView(myID)-=(senderId)
+        }      
       }
     case bsr_req(senderID:Int)=>{
       /*check if BSQ is not violated, if not send bsr_ack, increment BSC and add link to overlay*/
@@ -398,6 +505,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
       {
         BSC= BSC+1;
         realView(myID)+=senderID;
+        refCounter(senderID)+=1
         val requestor = "../"+senderID.toString;
         context.actorSelection(requestor) !  bsr_ack(myID)
       }
@@ -407,12 +515,13 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         context.actorSelection(requestor) !  bsr_nack(myID)
       }
     }
-    
     case bsr_ack(senderID:Int)=>
       {
         if (!realView(myID).contains(senderID))
         {
           realView(myID)+=senderID
+          var temp = refCounter(senderID)
+          refCounter.update(senderID,temp+1)
           BootStrapBook.getOrElse(senderID,new BSBE("empty",0)).updateState("connected");
         }
       }
@@ -423,6 +532,37 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
           BootStrapBook.getOrElse(senderID,new BSBE("empty",0)).updateState("bsr_nack");
         }
       }
+    case remove_old_links(senderId:Int,old_link_set:ArrayBuffer[edge])=>
+      {
+         for (e<-old_link_set)
+        {
+          if (e.src == myID) // sender wants me to create this link for him.
+            {
+              if (realView(myID).contains(e.dst))
+                {
+                  // Initiate con_req to create a link on behalf of the requestor
+                  val requestTo = "../"+e.dst.toString;
+                  context.actorSelection(requestTo) !  trim_req(myID)
+                }
+            }
+        }
+      }
+    case add_new_links(senderId:Int,req_link_set:ArrayBuffer[edge]) =>
+    {
+      for (e<-req_link_set)
+        {
+          if (e.src == myID && realView(myID).size < degree_constraint) // sender wants me to create this link for him.
+            {
+              if (!realView(myID).contains(e.dst))
+                {
+                  // Initiate con_req to create a link on behalf of the requestor
+                  val requestTo = "../"+e.dst.toString;
+                  context.actorSelection(requestTo) !  con_req(myID)
+                }
+            }
+        }
+    }
+  
   }
 }
 
@@ -444,6 +584,7 @@ object SmartTopology
 {
   def main(args:Array[String])
   {
+    println("HelloR20")
     if (args.length<1)
       println("Please enter the name of Graph file.")
     else
@@ -468,6 +609,3 @@ object SmartTopology
     }
   }
 }
-
-
-
