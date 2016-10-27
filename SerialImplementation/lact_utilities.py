@@ -120,19 +120,27 @@ class utilities:
                     return
                 else:
                     self.createGraph(file_name)
-            HCD = []
+            #HCD = []
+            MCD = []
+            edge_property = self.G.edge_properties["edge_cost"]
             for v_index in range(0,self.G.num_vertices()):
                 src = self.newG.vertex(v_index)
                 n_list = [self.G.vertex_index[n] for n in self.G.vertex(v_index).out_neighbours()]
-                hop_sum = 0
+                #hop_sum = 0
+                messaging_cost = 0
                 for n in n_list:
-                    hop_sum += graph_tool.topology.shortest_distance(self.newG, source=src, target=self.newG.vertex(n))
-                avg_hop_sum = float(hop_sum) / len(n_list)
-                HCD.append(avg_hop_sum)
+                    #hop_sum += graph_tool.topology.shortest_distance(self.newG, source=src, target=self.newG.vertex(n))
+                    messaging_cost += edge_property[self.G.edge(src,n)]*graph_tool.topology.shortest_distance(self.newG, source=src, target=self.newG.vertex(n))
+                #avg_hop_sum = float(hop_sum) / len(n_list)
+                avg_messaging_cost = float(messaging_cost)/len(n_list)
+                #HCD.append(avg_hop_sum)
+                MCD.append(avg_messaging_cost)
             plt.gca().set_color_cycle(['red'])
-            plt.plot(range(0,self.G.num_vertices()),HCD)
-            plt.legend(["avg social neighbour hop count"], loc="upper_left")
-            plt.title("Avg Social Hop Count")
+            #plt.plot(range(0,self.G.num_vertices()),HCD)
+            plt.plot(range(0,self.G.num_vertices()),MCD)
+            #plt.legend(["avg social neighbour hop count"], loc="upper_left")
+            plt.legend(["avg social neighbour message costs"], loc="upper_left")
+            plt.title("Avg Messaging cost")
             plt.show()
 
         def edgePlot(self,file_name=None):
