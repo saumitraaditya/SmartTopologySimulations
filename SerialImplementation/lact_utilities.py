@@ -1,9 +1,11 @@
 from graph_tool.all import *
-
+import matplotlib.pyplot as plt
+import numpy as np
 
 class utilities:
         def __init__(self,GraphFile):
             self.G = load_graph(GraphFile)
+            self.newG = None
 
         def createAdjList(self, save_as =None):
             adj_list = self.G.new_vertex_property("object")
@@ -25,11 +27,24 @@ class utilities:
                     dst = self.G.vertex_index[e.target()]
                     indexed_edge_list.append((src,dst))
                 # parse into adj_list graph_view for the vertex
+                # we only need information about one hop neighbors, we
+                # should only have them in the adj-list so remove any edge
+                # that links to a node outside one-hop radius
+                immed_neighbors = []
+                for neighbor in v.out_neighbours():
+                    immed_neighbors.append(self.G.vertex_index[neighbor])
+                # Add self to the list
+                immed_neighbors.append(self.G.vertex_index[v])
+                # filter out edges between any vertex not in the immed_neighbors list
+                filtered_edge_list = []
+                for (src, dst) in indexed_edge_list:
+                    if ((src in immed_neighbors) and (dst in immed_neighbors)):
+                        filtered_edge_list.append((src,dst))
                 # every vertex in the view has an edge associated with a list containing edges from/to it
-                for (src,dst) in indexed_edge_list:
+                for (src,dst) in filtered_edge_list:
                     adj_list[v][src]=[]
                     adj_list[v][dst]=[]
-                for (src,dst) in indexed_edge_list:
+                for (src,dst) in filtered_edge_list:
                     adj_list[v][src].append((src,dst))
                     adj_list[v][dst].append((src,dst))
 
@@ -48,3 +63,113 @@ class utilities:
             if (save_as != None):
                     self.G.save(save_as)
             return save_as
+
+        def createGraph(self,file_name):
+            # creates a Graph object by reading a adj_list file.
+            newG = Graph(directed=False)
+            # get number of vertices in the file
+            linecount=0
+            f = open(file_name)
+            line = f.readline()
+            while line:
+                linecount+=1
+                line = f.readline()
+            f.close()
+            newG.add_vertex(linecount)
+            # Start adding edges
+            f = open(file_name)
+            line = f.readline()
+            while line:
+                v_list = line.split(" ")
+                src = v_list[0]
+                # last element is newline
+                for dst in v_list[1:-1]:
+                    if (newG.edge(src,dst)==None):
+                        newG.add_edge(src,dst)
+                line = f.readline()
+            f.close()
+            self.newG = newG
+            self.newG.save("processed_graph.xml.gz")
+
+        def plotDegreeDistribution(self,file_name=None):
+            if self.newG==None:
+                if (file_name==None):
+                    print("Please enter the path of processed Graph file.")
+                    return
+                else:
+                    self.createGraph(file_name)
+            # compares degree distribution before and after
+            x_axis = range(0,self.G.num_vertices())
+            plt.gca().set_color_cycle(['red', 'green'])
+            social_degree = []
+            overlay_degree = []
+            for i in x_axis:
+                social_degree.append(self.G.vertex(i).out_degree())
+                overlay_degree.append(self.newG.vertex(i).out_degree())
+            plt.plot(x_axis, social_degree)
+            plt.plot(x_axis, overlay_degree)
+            plt.legend(["social_degree", "overlay_degree"], loc="upper_left")
+            plt.title("social degree vs overlay degree")
+            plt.show()
+
+        def HopCountDistribution(self,file_name=None):
+            #
+            if self.newG == None:
+                if (file_name == None):
+                    print("Please enter the path of processed Graph file.")
+                    return
+                else:
+                    self.createGraph(file_name)
+            HCD = []
+            for v_index in range(0,self.G.num_vertices()):
+                src = self.newG.vertex(v_index)
+                n_list = [self.G.vertex_index[n] for n in self.G.vertex(v_index).out_neighbours()]
+                hop_sum = 0
+                for n in n_list:
+                    hop_sum += graph_tool.topology.shortest_distance(self.newG, source=src, target=self.newG.vertex(n))
+                avg_hop_sum = float(hop_sum) / len(n_list)
+                HCD.append(avg_hop_sum)
+            plt.gca().set_color_cycle(['red'])
+            plt.plot(range(0,self.G.num_vertices()),HCD)
+            plt.legend(["avg social neighbour hop count"], loc="upper_left")
+            plt.title("Avg Social Hop Count")
+            plt.show()
+
+        def edgePlot(self,file_name=None):
+            if self.newG == None:
+                if (file_name == None):
+                    print("Please enter the path of processed Graph file.")
+                    return
+                else:
+                    self.createGraph(file_name)
+            objects = ("social_edges", "overlay_edges")
+            y_pos = np.arange(len(objects))
+            num_edges = [self.G.num_edges(), self.newG.num_edges()]
+            plt.bar(y_pos, num_edges, align='center', alpha=0.5)
+            plt.xticks(y_pos, objects)
+            plt.ylabel('num edges')
+            plt.title('total edges-social vs overlay')
+            plt.show()
+
+        def isConnected(self,file_name=None):
+            if self.newG == None:
+                if (file_name == None):
+                    print("Please enter the path of processed Graph file.")
+                    return
+                else:
+                    self.createGraph(file_name)
+            comp, hist = graph_tool.topology.label_components(self.newG)
+            if (len(hist) > 1):
+                print (hist)
+                print ("Graph is cot connected.")
+            else:
+                print ("Graph is connected.")
+
+
+        def getResults(self,filename):
+            self.createGraph(filename)
+            self.isConnected()
+            self.edgePlot()
+            self.plotDegreeDistribution()
+            self.HopCountDistribution()
+
