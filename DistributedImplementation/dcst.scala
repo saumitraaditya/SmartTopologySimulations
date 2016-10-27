@@ -78,7 +78,7 @@ class BSBE(State:String,Timestamp:Long)
  * that would be needed by the DCST algorithm to work, each invocation of MinDCST
  * would be provided with a updated snapshot that reflects the network view in the 
  * neighborhood.*/
-class ViewSnapshot(socialView:HashMap[Int,ArrayBuffer[Int]],realView:HashMap[Int,ArrayBuffer[Int]])
+class ViewSnapshot(socialView:HashMap[Int,ArrayBuffer[Tuple2[Int,Double]]],realView:HashMap[Int,ArrayBuffer[Int]])
 {
   var snapshot  = new HashMap [Int,ArrayBuffer[edge]]();
   val MaxVal = 10000.0;
@@ -92,7 +92,9 @@ class ViewSnapshot(socialView:HashMap[Int,ArrayBuffer[Int]],realView:HashMap[Int
     snapshot+=(source->new ArrayBuffer[edge]())
     for (target <- socialView(source))
     {
-      snapshot(source)+=new edge(source,target,MaxVal/(socialView(source).size+socialView(target).size),realView(source).contains(target))
+      //snapshot(source)+=new edge(source,target._1,MaxVal/(socialView(source).size+socialView(target._1).size),realView(source).contains(target._1))
+        snapshot(source)+=new edge(source,target._1,MaxVal/(target._2),realView(source).contains(target._1))
+
     }
   } 
 }
@@ -101,7 +103,7 @@ case class realDegree(num_links:Int)
 // Link advert method
 case class LinkAdvt(source:Int, target:Int)
 // Exchange Rosters with Friends
-case class RosterExchange(sender:Int,roster:ArrayBuffer[Int])
+case class RosterExchange(sender:Int,roster:ArrayBuffer[Tuple2[Int,Double]])
 
 /* Keeps track of the topology overtime */
 class Monitor(RosterFile:String) extends Actor
@@ -113,7 +115,12 @@ class Monitor(RosterFile:String) extends Actor
         val src = split_array(0).toInt;
         EdgeMap+=(src-> new ArrayBuffer[edge]())
         for (i<- 1 to split_array.length-1)
-          EdgeMap(src)+=(new edge(src,split_array(i).toInt,0.0,false))
+          {
+            var dst_cost = split_array(i).split("-")
+            var dst = dst_cost(0).toInt
+            var cost = dst_cost(1).toDouble
+            EdgeMap(src)+=(new edge(src,dst,cost,false))
+          }
       }
   def receive=
     {
@@ -177,23 +184,23 @@ class Monitor(RosterFile:String) extends Actor
 }
 
 /* A node is an independent network gateway*/
-class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
+class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Actor
 {
   val myID = uid;
-  val degree_constraint = 20;
+  val degree_constraint = 10;
   val gamma_cost = .75;
   var CostPrevTree:Double = Double.MaxValue;
   var refCounter = new HashMap[Int,Int](){ override def default(key:Int) = 0 } //keeps track how many nodes depend on my link to this dest.
   var prevTree:ArrayBuffer[edge]= new ArrayBuffer[edge]();
   /* will contain social links*/
-  var socialView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
+  var socialView = new HashMap[Int,ArrayBuffer[Tuple2[Int,Double]]](){ override def default(key:Int) = new ArrayBuffer[Tuple2[Int,Double]] }
   /* will contain actual links, needs to be updated when new links are created by self, or information about
    * new link created by neighbors is learnt*/
   var realView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
   /*Initially, node will have edges to to immediate neighbors,
    * gradually it will learn via messaging about edges via neighbor
    * to shared neighbors and add them */
-  socialView+=(uid->new ArrayBuffer[Int]());
+  socialView+=(uid->new ArrayBuffer[Tuple2[Int,Double]]());
   realView+=(uid->new ArrayBuffer[Int]());
   
   /* BootStrap bookkeeping*/
@@ -201,16 +208,16 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
   var BSC = 0; //BootStrapCounter, links created to count BSR links created.
   var BST = 5; //BootStrapThreshhold
   var BSR_outstanding=0;
-  var BootStrapQ = new collection.mutable.Queue[Int]
+  var BootStrapQ = new collection.mutable.Queue[Int] //needed to send boot strap requests in a round robin manner.
   var BootStrapBook = new HashMap[Int,BSBE](){ override def default(key:Int) = new BSBE("empty",0) }
   for (neighbor <- Roster)
   {
-     socialView+=(neighbor->new ArrayBuffer[Int]()); // Adjacency list for neighbors
-     realView+=(neighbor->new ArrayBuffer[Int]()); // realView for neighbors
+     socialView+=(neighbor._1->new ArrayBuffer[Tuple2[Int,Double]]()); // Adjacency list for neighbors
+     realView+=(neighbor._1->new ArrayBuffer[Int]()); // realView for neighbors
      socialView(uid)+=neighbor; // Adjacency list for root node.
      var BSBE_temp = new BSBE("empty",0)
-     BootStrapBook+=(neighbor->BSBE_temp);
-     BootStrapQ+=neighbor
+     BootStrapBook+=(neighbor._1->BSBE_temp);
+     BootStrapQ+=neighbor._1
   }    
   def receive = 
   {
@@ -225,8 +232,8 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         import Asys.dispatcher;
         Asys.scheduler.schedule(new FiniteDuration(1,SECONDS),new FiniteDuration(30,SECONDS),self,revaluate_socialTopo)
         //randomTopology
-        //Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
-        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,randomTopology)
+        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
+        //Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,randomTopology)
         Asys.scheduler.schedule(new FiniteDuration(60,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
       }
     case `BootStrap`=>
@@ -300,7 +307,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         val RVclone = realView(myID).clone()
         for (neighbor <- Roster)
         {
-          val neighborActor = "../"+neighbor.toString;
+          val neighborActor = "../"+neighbor._1.toString;
           context.actorSelection(neighborActor) ! RosterExchange(uid,rosterCopy)
           context.actorSelection(neighborActor) !  RVUpdate(myID,RVclone)
         }
@@ -355,7 +362,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
             //disseminate set of edges to be added-sendDeepCopy
             for (neighbor <- Roster)
             {
-              val neighborActor = "../"+neighbor.toString;
+              val neighborActor = "../"+neighbor._1.toString;
               context.actorSelection(neighborActor) ! LACTupdate(myID,newSet) //currentDCST is a val i.e constant.
             }
             //diss3minate set of edges to be removed
@@ -372,10 +379,10 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         var randTop = scala.util.Random.shuffle(socialView(myID).toList).take(degree_constraint)
         for (dst<-randTop)
           {
-            if (!realView(myID).contains(dst))
+            if (!realView(myID).contains(dst._1))
             {
               //send con_req to dst
-              val requestTo = "../"+dst.toString;
+              val requestTo = "../"+dst._1.toString;
               context.actorSelection(requestTo) !  con_req(myID)
             }
           }
@@ -432,13 +439,13 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Int]) extends Actor
         //----------------------------------------------------- TBR
         // should I update others about realView here or after LACT has been calculated.
       }
-    case RosterExchange(sender:Int,neighborRoster:ArrayBuffer[Int])=>
+    case RosterExchange(sender:Int,neighborRoster:ArrayBuffer[Tuple2[Int,Double]])=>
       {
         //Initially only interested in links to shared neighbours.
         // Add to local view a relevant link.
         for (target<-neighborRoster)
         {
-          if (socialView.keySet.contains(target) && !socialView(sender).contains(target)) //fix duplicate additions
+          if (socialView.keySet.contains(target._1) && !socialView(sender).contains(target._1)) //fix duplicate additions
           {
             socialView(sender)+=target;
           }         
@@ -595,11 +602,17 @@ object SmartTopology
       // Read the file , initialize the nodes.
       for (line <- Source.fromFile(GraphFile).getLines())
       {
-        var roster = new ArrayBuffer[Int]();
+        var roster = new ArrayBuffer[Tuple2[Int,Double]]();
         val split_array = line.split(" ");
         val src = split_array(0).toInt;
         for (i<- 1 to split_array.length-1)
-          roster+=(split_array(i).toInt)
+          {
+            var dst_cost = split_array(i).split("-")
+            var dst = dst_cost(0).toInt
+            var cost = dst_cost(1).toDouble
+            
+            roster+=(new Tuple2(dst,cost))
+          }
         nodesInNetwork+=actor_system.actorOf(Props(new Node(src,roster)),src.toString());
       }
       val monitor = actor_system.actorOf(Props(new Monitor(GraphFile)),"monitor")
