@@ -201,5 +201,5 @@ class Automaton (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
     for (action <- actionSet)
       action.available = true;
   }
-  
+ 
 }
