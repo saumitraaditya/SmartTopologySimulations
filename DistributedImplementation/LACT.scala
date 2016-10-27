@@ -22,6 +22,7 @@ class LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
   var CostTree:Double = 0.0;
   var BestTree:ArrayBuffer[edge] = null;
   var MinTreeCost = Double.MaxValue;
+  var inCompleteTree:Boolean = false
   
   
   def displaySpanningTree(BestSpanningTree:Boolean=false)=
@@ -51,6 +52,7 @@ class LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
     treeTraceList.push(current_automaton);
     var action_probability = new ArrayBuffer[Double]();
     var selectedAction:selected_action = null;
+    var dcstPossible:Boolean = true
     breakable {
         while (SpanningTree.size != myView.snapshot.keySet.size-1)
           {
@@ -86,6 +88,7 @@ class LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
               if (chosenAutomaton == null)
               {
                 println("DCST is not possible for this vertex.");
+                dcstPossible = false
                 break;
               }
               
@@ -99,11 +102,17 @@ class LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
             current_automaton = AutomatonTable(selectedAction.sel_edge.dst);
           }
     }
-    if (CostTree < MinTreeCost )
+    if ((CostTree < MinTreeCost || inCompleteTree) && dcstPossible) //do not want to select a incomplete tree with lower cost.
       {
         MinTreeCost = CostTree;
         BestTree = SpanningTree;
-        
+        inCompleteTree = false;
+      }
+    if (MinTreeCost==Double.MaxValue) //At this stage if dcst is not at all possible, have not been realized in any prev iteration.
+      {
+        inCompleteTree = true
+        MinTreeCost = CostTree;
+        BestTree = SpanningTree;
       }
     //println("Iteration Tree Cost "+CostTree)
     //println("minimum cost tree is " + MinTreeCost);
@@ -141,7 +150,7 @@ object LACT_unitTest
     // create a unit test for LACT and make sure it works.
     // once this step is completed move on to inetgrate it with dcst.
     //LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
-    var socialView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
+    var socialView = new HashMap[Int,ArrayBuffer[Tuple2[Int,Double]]](){ override def default(key:Int) = new ArrayBuffer[Tuple2[Int,Double]] }
     var realView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
     if (args.length<2)
       println("Please enter the names of link desciption files.")
@@ -155,7 +164,12 @@ object LACT_unitTest
           val src = split_array(0).toInt;
           val store = socialView(src)
           for (i<- 1 to split_array.length-1)
-            store+=split_array(i).toInt;
+          {
+            var dst_cost = split_array(i).split("-")
+            var dst = dst_cost(0).toInt
+            var cost = dst_cost(1).toDouble
+            store+=new Tuple2(dst,cost)
+          }
           socialView+=(src->store);
         }
         for (line <- Source.fromFile(RealLinksFile).getLines())
@@ -198,7 +212,7 @@ object LACT_unitTest
      }
      * */
      
-    myLact.iterateTree(1);
+    myLact.iterateTree(23);
     myLact.displaySpanningTree(true);
     }
    
