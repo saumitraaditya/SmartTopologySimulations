@@ -8,6 +8,7 @@ import scala.concurrent.duration._
 import java.util.concurrent.TimeUnit;
 import scala.io.Source
 import scala.util.Random
+import util.control.Breaks._
 
 
 case object start
@@ -15,6 +16,7 @@ case object revaluate_socialTopo
 case object trigger_lact
 case object displayTopology
 case object BootStrap
+case object GreedyPatch
 // Random Topology
 case object randomTopology
 case class RVUpdate(senderID:Int,RV:ArrayBuffer[Int])
@@ -178,7 +180,7 @@ class Monitor(RosterFile:String) extends Actor
           /* schedule periodic displays*/
           val Asys = context.system;
           import Asys.dispatcher;
-          Asys.scheduler.schedule(new FiniteDuration(240,SECONDS),new FiniteDuration(240,SECONDS),self,displayTopology)
+          Asys.scheduler.schedule(new FiniteDuration(240,SECONDS),new FiniteDuration(300,SECONDS),self,displayTopology)
         }
     }
 }
@@ -187,7 +189,7 @@ class Monitor(RosterFile:String) extends Actor
 class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Actor
 {
   val myID = uid;
-  val degree_constraint = 10;
+  val degree_constraint = 30;
   val gamma_cost = .75;
   var CostPrevTree:Double = Double.MaxValue;
   var refCounter = new HashMap[Int,Int](){ override def default(key:Int) = 0 } //keeps track how many nodes depend on my link to this dest.
@@ -232,12 +234,43 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Acto
         import Asys.dispatcher;
         Asys.scheduler.schedule(new FiniteDuration(1,SECONDS),new FiniteDuration(30,SECONDS),self,revaluate_socialTopo)
         //randomTopology
-        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
+        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(80,SECONDS),self,trigger_lact)
         //Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,randomTopology)
-        Asys.scheduler.schedule(new FiniteDuration(60,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
+        Asys.scheduler.schedule(new FiniteDuration(60,SECONDS),new FiniteDuration(100,SECONDS),self,GreedyPatch)
+        //Asys.scheduler.schedule(new FiniteDuration(60,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
+      }
+    case `GreedyPatch`=>
+      {
+        /*Greedy Link set-up*/
+         if (realView(myID).size < degree_constraint)
+         {
+           //select nodes with whom no direct link
+           //arrange them in descending order of priority.
+           //select a subset of them to send con_reqs.
+           var GreedyTop = socialView(myID).toList.sortBy(_._2);
+           var to_select = degree_constraint - realView(myID).size;
+           var counter = 0
+           breakable
+           {
+                 for(dst <- GreedyTop)
+                 {
+                   if (!realView(myID).contains(dst._1))
+                   {
+                     counter = counter+1;
+                     //send con_req to dst
+                      val requestTo = "../"+dst._1.toString;
+                      context.actorSelection(requestTo) !  con_req(myID)
+                   }
+                   if (counter >= to_select)
+                       break;
+                 }
+           }
+           
+         }
       }
     case `BootStrap`=>
       {
+        
         if (BST > socialView(myID).size)
           BST = socialView(myID).size
         //if I already have more than or equal to threshhold links do nothing
@@ -591,7 +624,7 @@ object SmartTopology
 {
   def main(args:Array[String])
   {
-    println("HelloR20")
+    println("HelloX20")
     if (args.length<1)
       println("Please enter the name of Graph file.")
     else
