@@ -37,7 +37,7 @@ class LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
     else
       for (this_edge<-SpanningTree)
         displayString.append(" %d-->%d ".format(this_edge.src,this_edge.dst));
-    println(displayString);
+    System.out.println(displayString);
   }
   /*Invocation results in a degree constrained spanning tree*/
   def start(curr_node_uid:Int):ArrayBuffer[Double]=
@@ -87,7 +87,7 @@ class LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
               }
               if (chosenAutomaton == null)
               {
-                println("DCST is not possible for this vertex.");
+                //System.out.println("DCST is not possible for this vertex.");
                 dcstPossible = false
                 break;
               }
@@ -108,14 +108,19 @@ class LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
         BestTree = SpanningTree;
         inCompleteTree = false;
       }
+    else if (CostTree < MinTreeCost && inCompleteTree)
+    {
+      MinTreeCost = CostTree;
+      BestTree = SpanningTree;
+    }
     if (MinTreeCost==Double.MaxValue) //At this stage if dcst is not at all possible, have not been realized in any prev iteration.
       {
         inCompleteTree = true
         MinTreeCost = CostTree;
         BestTree = SpanningTree;
       }
-    //println("Iteration Tree Cost "+CostTree)
-    //println("minimum cost tree is " + MinTreeCost);
+    //System.out.println("Iteration Tree Cost "+CostTree)
+    //System.out.println("minimum cost tree is " + MinTreeCost);
     // after every iteration all automatons should be refreshed
     for (automatonID <- AutomatonTable.keySet)
     {
@@ -143,7 +148,7 @@ class LACT (uid:Int,view:ViewSnapshot,reward_val:Double,deg_constraint:Int)
   
 }
 
-object LACT_unitTest 
+/*object LACT_unitTest 
 {
    def main(args:Array[String])
   {  
@@ -153,7 +158,7 @@ object LACT_unitTest
     var socialView = new HashMap[Int,ArrayBuffer[Tuple2[Int,Double]]](){ override def default(key:Int) = new ArrayBuffer[Tuple2[Int,Double]] }
     var realView = new HashMap[Int,ArrayBuffer[Int]](){ override def default(key:Int) = new ArrayBuffer[Int] }
     if (args.length<2)
-      println("Please enter the names of link desciption files.")
+      System.out.println("Please enter the names of link desciption files.")
     else
       {
         val SocialLinksFile = args(0);
@@ -188,13 +193,13 @@ object LACT_unitTest
     for (src <- socialView.keySet)
       {
         for (dst<-socialView(src))
-          println(src+"->"+dst);
+          System.out.println(src+"->"+dst);
       }
-    println("--------------------------------------")
+    System.out.println("--------------------------------------")
     for (src <- realView.keySet)
       {
         for (dst<-realView(src))
-          println(src+"->"+dst);
+          System.out.println(src+"->"+dst);
       }
       * */
     //class ViewSnapshot(socialView:HashMap[Int,ArrayBuffer[Int]],realView:HashMap[Int,ArrayBuffer[Int]])
@@ -207,7 +212,7 @@ object LACT_unitTest
      {
        for (e<-mySnapshot.snapshot(src))
        {
-         println(e.src,e.dst,e.cost,e.real);
+         System.out.println(e.src,e.dst,e.cost,e.real);
        }
      }
      * */
@@ -216,5 +221,5 @@ object LACT_unitTest
     myLact.displaySpanningTree(true);
     }
    
-}
+}*/ //wrap the entire main object into comments.
   
