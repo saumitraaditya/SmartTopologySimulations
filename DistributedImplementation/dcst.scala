@@ -9,6 +9,10 @@ import java.util.concurrent.TimeUnit;
 import scala.io.Source
 import scala.util.Random
 import util.control.Breaks._
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.PrintStream;
 
 
 case object start
@@ -19,6 +23,7 @@ case object BootStrap
 case object GreedyPatch
 // Random Topology
 case object randomTopology
+case object GreedyTopology
 case class RVUpdate(senderID:Int,RV:ArrayBuffer[Int])
 case class RVUpdateNeg(senderID:Int,TrLinks:ArrayBuffer[Int])
 case class LACTupdate(senderID:Int,lact:collection.immutable.Set[edge])
@@ -144,19 +149,19 @@ class Monitor(RosterFile:String) extends Actor
         {
           for (src <- EdgeMap.keySet)
           {
-            println("------------------ "+src+" ----------------------")
+            System.out.println("------------------ "+src+" ----------------------")
             var SB = new StringBuilder();
             for (e<-EdgeMap(src))
             {
               SB.append(e.getString())
               SB.append(" ");
             }
-            println(SB);
-            println("-----------real/social--------------")
-            println(EdgeMap(src).filter { _.real}.size.toFloat/EdgeMap(src).size)
+            System.out.println(SB);
+            System.out.println("-----------real/social--------------")
+            System.out.println(EdgeMap(src).filter { _.real}.size.toFloat/EdgeMap(src).size)
           }
-          println("\n\n\n\n")
-          println("------------------ "+"FILE"+" ----------------------")
+          System.out.println("\n\n\n\n")
+          System.out.println("------------------ "+"FILE"+" ----------------------")
           for (src <- EdgeMap.keySet)
           {          
             var SB_file = new StringBuilder();
@@ -169,10 +174,10 @@ class Monitor(RosterFile:String) extends Actor
                 SB_file.append(" ");
               }
             }
-            println(SB_file)
+            System.out.println(SB_file)
           }
-          println("\n\n\n\n");
-          println("------------------ "+"END OF FILE"+" ----------------------")
+          System.out.println("\n\n\n\n");
+          System.out.println("------------------ "+"END OF FILE"+" ----------------------")
           
         }
       case `start`=>
@@ -180,7 +185,7 @@ class Monitor(RosterFile:String) extends Actor
           /* schedule periodic displays*/
           val Asys = context.system;
           import Asys.dispatcher;
-          Asys.scheduler.schedule(new FiniteDuration(240,SECONDS),new FiniteDuration(300,SECONDS),self,displayTopology)
+          Asys.scheduler.schedule(new FiniteDuration(500,SECONDS),new FiniteDuration(300,SECONDS),self,displayTopology)
         }
     }
 }
@@ -234,10 +239,11 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Acto
         import Asys.dispatcher;
         Asys.scheduler.schedule(new FiniteDuration(1,SECONDS),new FiniteDuration(30,SECONDS),self,revaluate_socialTopo)
         //randomTopology
-        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(80,SECONDS),self,trigger_lact)
+        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
         //Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,randomTopology)
-        Asys.scheduler.schedule(new FiniteDuration(60,SECONDS),new FiniteDuration(100,SECONDS),self,GreedyPatch)
-        //Asys.scheduler.schedule(new FiniteDuration(60,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
+        //Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,GreedyTopology)
+        Asys.scheduler.schedule(new FiniteDuration(80,SECONDS),new FiniteDuration(80,SECONDS),self,GreedyPatch)
+        Asys.scheduler.schedule(new FiniteDuration(80,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
       }
     case `GreedyPatch`=>
       {
@@ -247,7 +253,7 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Acto
            //select nodes with whom no direct link
            //arrange them in descending order of priority.
            //select a subset of them to send con_reqs.
-           var GreedyTop = socialView(myID).toList.sortBy(_._2);
+           var GreedyTop = socialView(myID).toList.sortBy(-_._2); //negate to sort  in descending order
            var to_select = degree_constraint - realView(myID).size;
            var counter = 0
            breakable
@@ -409,18 +415,49 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Acto
     case `randomTopology` =>
       {
         // Select random edges from social topology and map to overlay links.
-        var randTop = scala.util.Random.shuffle(socialView(myID).toList).take(degree_constraint)
-        for (dst<-randTop)
-          {
-            if (!realView(myID).contains(dst._1))
-            {
-              //send con_req to dst
-              val requestTo = "../"+dst._1.toString;
-              context.actorSelection(requestTo) !  con_req(myID)
+        if (realView(myID).size < degree_constraint){
+            var randTop = scala.util.Random.shuffle(socialView(myID).toList).take(2*degree_constraint)
+            var to_select = degree_constraint - realView(myID).size;
+            var counter = 0;
+            breakable {
+            for (dst<-randTop)
+              {
+                if (!realView(myID).contains(dst._1) && counter < to_select)
+                {
+                  //send con_req to dst
+                  counter = counter+1;
+                  val requestTo = "../"+dst._1.toString;
+                  context.actorSelection(requestTo) !  con_req(myID)
+                }
+                if (counter >= to_select)
+                           break;
+              }
             }
-          }
+        }
         
-        
+      }
+      
+    case `GreedyTopology`=>
+      {
+        //select degree_constraint nodes in a greedy manner.
+        var GreedyTop = socialView(myID).toList.sortBy(-_._2);//negate to sort in descending order
+        var to_select = degree_constraint - realView(myID).size;
+           var counter = 0
+           breakable
+           {
+                 for(dst <- GreedyTop)
+                 {
+                   if (!realView(myID).contains(dst._1))
+                   {
+                     counter = counter+1;
+                     //send con_req to dst
+                      val requestTo = "../"+dst._1.toString;
+                      context.actorSelection(requestTo) !  con_req(myID)
+                   }
+                   if (counter >= to_select)
+                       break;
+                 }
+           }
       }
       
     case RVUpdate(senderID:Int, rv:ArrayBuffer[Int])=>
@@ -624,12 +661,18 @@ object SmartTopology
 {
   def main(args:Array[String])
   {
-    println("HelloX20")
+    System.out.println("HelloL40")
     if (args.length<1)
-      println("Please enter the name of Graph file.")
+      System.out.println("Please enter the name of Graph file.")
     else
     {
       val GraphFile = args(0);
+      /*File IO*/
+      val PS_old = System.out;
+      val out_file = new File("processed_results.txt");
+      val fos = new FileOutputStream(out_file);
+      val PS_new = new PrintStream(fos);
+      System.setOut(PS_new);
       val actor_system = ActorSystem("SmartTopology")
       val nodesInNetwork = new ArrayBuffer[ActorRef]();
       // Read the file , initialize the nodes.
@@ -652,6 +695,9 @@ object SmartTopology
       val Manager = actor_system.actorOf(Props(new SimulationManager(nodesInNetwork)),"Manager")
       Manager ! start;
       monitor ! start;
+      import actor_system.dispatcher;
+      for (node_actor <- nodesInNetwork)
+        actor_system.scheduler.scheduleOnce(new FiniteDuration(420,SECONDS),node_actor,PoisonPill)
     }
   }
 }
