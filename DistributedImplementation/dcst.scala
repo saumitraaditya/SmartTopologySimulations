@@ -147,6 +147,7 @@ class Monitor(RosterFile:String) extends Actor
         }
       case `displayTopology`=>
         {
+         /* dont need this info
           for (src <- EdgeMap.keySet)
           {
             System.out.println("------------------ "+src+" ----------------------")
@@ -161,6 +162,7 @@ class Monitor(RosterFile:String) extends Actor
             System.out.println(EdgeMap(src).filter { _.real}.size.toFloat/EdgeMap(src).size)
           }
           System.out.println("\n\n\n\n")
+         */ 
           System.out.println("------------------ "+"FILE"+" ----------------------")
           for (src <- EdgeMap.keySet)
           {          
@@ -191,7 +193,7 @@ class Monitor(RosterFile:String) extends Actor
 }
 
 /* A node is an independent network gateway*/
-class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Actor
+class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]],val algo:String) extends Actor
 {
   val myID = uid;
   val degree_constraint = 30;
@@ -239,11 +241,16 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Acto
         import Asys.dispatcher;
         Asys.scheduler.schedule(new FiniteDuration(1,SECONDS),new FiniteDuration(30,SECONDS),self,revaluate_socialTopo)
         //randomTopology
-        Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
-        //Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,randomTopology)
-        //Asys.scheduler.schedule(new FiniteDuration(10,SECONDS),new FiniteDuration(120,SECONDS),self,GreedyTopology)
-        Asys.scheduler.schedule(new FiniteDuration(80,SECONDS),new FiniteDuration(80,SECONDS),self,GreedyPatch)
-        Asys.scheduler.schedule(new FiniteDuration(80,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
+        if (algo.equals("RANDOM"))
+            Asys.scheduler.schedule(new FiniteDuration(90,SECONDS),new FiniteDuration(120,SECONDS),self,randomTopology)
+        else if (algo.equals("GREEDY"))
+            Asys.scheduler.schedule(new FiniteDuration(90,SECONDS),new FiniteDuration(120,SECONDS),self,GreedyTopology)
+        else
+        {
+            Asys.scheduler.schedule(new FiniteDuration(90,SECONDS),new FiniteDuration(120,SECONDS),self,trigger_lact)
+            Asys.scheduler.schedule(new FiniteDuration(180,SECONDS),new FiniteDuration(80,SECONDS),self,GreedyPatch)
+            Asys.scheduler.schedule(new FiniteDuration(180,SECONDS),new FiniteDuration(120,SECONDS),self,BootStrap)
+        }
       }
     case `GreedyPatch`=>
       {
@@ -533,9 +540,8 @@ class Node(val uid:Int, var Roster:ArrayBuffer[Tuple2[Int,Double]]) extends Acto
             val requestor = "../"+senderId.toString;
             context.actorSelection(requestor) !  con_ack(myID)       
         }
-        if (realView(myID).contains(senderId))
+        else if (realView(myID).contains(senderId))
         {
-           realView(myID)+=senderId;
            var temp = refCounter(senderId)
            refCounter.update(senderId,temp+1)
         }
@@ -661,12 +667,13 @@ object SmartTopology
 {
   def main(args:Array[String])
   {
-    System.out.println("HelloL40")
-    if (args.length<1)
-      System.out.println("Please enter the name of Graph file.")
+    if (args.length<2)
+      System.out.println("Please enter the name of Graph file and algorithm.")
     else
     {
       val GraphFile = args(0);
+      val algo = args(1);
+      System.out.println(algo);
       /*File IO*/
       val PS_old = System.out;
       val out_file = new File("processed_results.txt");
@@ -689,7 +696,7 @@ object SmartTopology
             
             roster+=(new Tuple2(dst,cost))
           }
-        nodesInNetwork+=actor_system.actorOf(Props(new Node(src,roster)),src.toString());
+        nodesInNetwork+=actor_system.actorOf(Props(new Node(src,roster,algo)),src.toString());
       }
       val monitor = actor_system.actorOf(Props(new Monitor(GraphFile)),"monitor")
       val Manager = actor_system.actorOf(Props(new SimulationManager(nodesInNetwork)),"Manager")
@@ -697,7 +704,7 @@ object SmartTopology
       monitor ! start;
       import actor_system.dispatcher;
       for (node_actor <- nodesInNetwork)
-        actor_system.scheduler.scheduleOnce(new FiniteDuration(420,SECONDS),node_actor,PoisonPill)
+        actor_system.scheduler.scheduleOnce(new FiniteDuration(900,SECONDS),node_actor,PoisonPill)
     }
   }
 }
